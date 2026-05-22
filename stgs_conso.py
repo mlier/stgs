@@ -1,4 +1,5 @@
 import csv
+import json
 import os
 import smtplib
 from datetime import datetime
@@ -156,6 +157,41 @@ GRANULARITY_LABELS = {
 }
 
 
+def _label_to_iso(label: str, granularity: str) -> str:
+    """Convertit un label de date du portail vers le format ISO.
+
+    L'année est inférée depuis la date courante : si le mois du label est
+    supérieur au mois courant, le label appartient à l'année précédente.
+
+    Args:
+        label: Label brut retourné par le serveur ("21/05", "S 11/05",
+               "05/2026", "2025").
+        granularity: Granularité parmi "journalier", "hebdomadaire",
+                     "mensuel", "annuel".
+
+    Returns:
+        "YYYY-MM-DD" pour journalier et hebdomadaire,
+        "YYYY-MM" pour mensuel, "YYYY" pour annuel.
+    """
+    today = datetime.now()
+
+    if granularity == "journalier":      # "21/05" → "2026-05-21"
+        d, m = int(label[:2]), int(label[3:5])
+        y = today.year if m <= today.month else today.year - 1
+        return f"{y}-{m:02d}-{d:02d}"
+
+    if granularity == "hebdomadaire":    # "S 11/05" → "2026-05-11"
+        d, m = int(label[2:4]), int(label[5:7])
+        y = today.year if m <= today.month else today.year - 1
+        return f"{y}-{m:02d}-{d:02d}"
+
+    if granularity == "mensuel":         # "05/2026" → "2026-05"
+        m, y = int(label[:2]), int(label[3:])
+        return f"{y}-{m:02d}"
+
+    return label                         # "2025" → "2025"
+
+
 def _build_snapshot_rows(data: dict) -> list[dict]:
     """Convertit le JSON brut du portail en liste de lignes CSV normalisées.
 
@@ -180,7 +216,7 @@ def _build_snapshot_rows(data: dict) -> list[dict]:
             for entry in granu_data["xdatas"]:
                 values, label, total = entry[0], entry[1], entry[2]
                 row = {"type": nature, "granularite": granularite,
-                       "periode": label, "unite": unity, "total": total}
+                       "periode": _label_to_iso(label, granularite), "unite": unity, "total": total}
                 for i, val in enumerate(values):
                     row[col_labels[i] if i < len(col_labels) else f"valeur_{i}"] = val
                 rows.append(row)
@@ -226,11 +262,11 @@ def today_in_incremental_csv(csv_path: Path) -> bool:
         csv_path: Chemin vers conso_quotidienne.csv.
 
     Returns:
-        True si une ligne avec la période JJ/MM du jour est trouvée.
+        True si une ligne avec la période YYYY-MM-DD du jour est trouvée.
     """
     if not csv_path.exists():
         return False
-    today = datetime.now().strftime("%d/%m")
+    today = datetime.now().strftime("%Y-%m-%d")
     with open(csv_path, newline="", encoding="utf-8") as f:
         return any(row["periode"] == today for row in csv.DictReader(f))
 
@@ -255,22 +291,16 @@ def data_changed(new_data: dict, last_snapshot: Path) -> bool:
 # CSV incrémental journalier
 # ---------------------------------------------------------------------------
 
-def _sort_key(label: str) -> tuple:
-    parts = label.split("/")
-    if len(parts) == 2:
-        return (int(parts[1]), int(parts[0]))  # (mois, jour)
-    return (0, 0)
-
-
 def update_incremental_csv(daily_entries: list, filepath: Path) -> int:
     """Ajoute les nouvelles entrées journalières au CSV incrémental.
 
     Lit le fichier existant, n'insère que les périodes absentes (idempotent),
-    puis réécrit le fichier trié par date chronologique.
+    puis réécrit le fichier trié chronologiquement. Les dates sont stockées
+    au format ISO "YYYY-MM-DD".
 
     Args:
         daily_entries: Liste d'entrées xdatas journalières au format
-            [[telereleve, fuite, fraude], "JJ/MM", total].
+            [[telereleve, fuite, fraude], "JJ/MM", total] (format serveur).
         filepath: Chemin vers conso_quotidienne.csv.
 
     Returns:
@@ -286,14 +316,15 @@ def update_incremental_csv(daily_entries: list, filepath: Path) -> int:
     added = 0
     for entry in daily_entries:
         values, label, total = entry[0], entry[1], entry[2]
-        if label not in existing:
-            row = {"periode": label, "total": total, "unite": "Litre"}
+        iso_label = _label_to_iso(label, "journalier")
+        if iso_label not in existing:
+            row = {"periode": iso_label, "total": total, "unite": "Litre"}
             for i, col in enumerate(col_names):
                 row[col] = values[i] if i < len(values) else 0.0
-            existing[label] = row
+            existing[iso_label] = row
             added += 1
 
-    rows = sorted(existing.values(), key=lambda r: _sort_key(r["periode"]))
+    rows = sorted(existing.values(), key=lambda r: r["periode"])
     with open(filepath, "w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=DAILY_CSV_COLUMNS)
         writer.writeheader()
@@ -313,16 +344,17 @@ def get_last_completed_day(daily_entries: list) -> tuple[str, float] | None:
 
     Args:
         daily_entries: Liste d'entrées xdatas journalières au format
-            [[telereleve, fuite, fraude], "JJ/MM", total].
+            [[telereleve, fuite, fraude], "JJ/MM", total] (format serveur).
 
     Returns:
         Tuple (label_date, total_litres) du dernier jour complété, ou None.
     """
-    today = datetime.now().strftime("%d/%m")
+    today = datetime.now().strftime("%Y-%m-%d")
     for entry in reversed(daily_entries):
         _, label, total = entry[0], entry[1], entry[2]
-        if total > 0 and label != today:
-            return label, total
+        iso_label = _label_to_iso(label, "journalier")
+        if total > 0 and iso_label != today:
+            return iso_label, total
     return None
 
 
@@ -331,7 +363,7 @@ def check_alert_already_sent(alert_file: Path, date_label: str) -> bool:
 
     Args:
         alert_file: Fichier .last_alert contenant la dernière date alertée.
-        date_label: Label de date au format "JJ/MM".
+        date_label: Label de date au format ISO "YYYY-MM-DD".
 
     Returns:
         True si l'alerte pour cette date a déjà été envoyée.
@@ -346,7 +378,7 @@ def mark_alert_sent(alert_file: Path, date_label: str):
 
     Args:
         alert_file: Fichier .last_alert à mettre à jour.
-        date_label: Label de date au format "JJ/MM".
+        date_label: Label de date au format ISO "YYYY-MM-DD".
     """
     alert_file.write_text(date_label)
 
@@ -419,6 +451,10 @@ if __name__ == "__main__":
 
     data          = get_data(session)
     daily_entries = data.get("EAU", {}).get("gd", {}).get("xdatas", [])
+
+    json_path = data_dir / "data_raw.json"
+    json_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    print(f"JSON brut sauvegardé : {json_path}")
 
     # Snapshot conditionnel
     timestamp     = datetime.now().strftime("%Y%m%d_%H%M%S")
