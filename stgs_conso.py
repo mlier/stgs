@@ -37,6 +37,8 @@ DAILY_CSV_COLUMNS = ["periode", "total", "Télérelève", "Fuite en cours", "Fra
 # ---------------------------------------------------------------------------
 
 class _FormParser(HTMLParser):
+    """Parse un formulaire HTML pour en extraire l'action et les champs input."""
+
     def __init__(self):
         super().__init__()
         self.form_action = None
@@ -55,6 +57,18 @@ class _FormParser(HTMLParser):
 
 
 def login(session: requests.Session) -> bool:
+    """Authentifie la session sur le portail Agence en Ligne.
+
+    Récupère la page de login, parse dynamiquement le formulaire HTML (action
+    Struts avec jsessionid, champs login/password), soumet les credentials et
+    vérifie la présence d'un lien de déconnexion dans la réponse.
+
+    Args:
+        session: Session requests à authentifier (les cookies sont mis à jour en place).
+
+    Returns:
+        True si l'authentification a réussi, False sinon.
+    """
     r = session.get(f"{BASE_URL}/login.action", allow_redirects=True)
     login_url = r.url
 
@@ -86,6 +100,23 @@ def login(session: requests.Session) -> bool:
 # ---------------------------------------------------------------------------
 
 def get_data(session: requests.Session) -> dict:
+    """Récupère les données de consommation depuis l'endpoint AJAX du portail.
+
+    Appelle chartsTeleMeasure.action avec les headers AJAX requis. La session
+    doit être préalablement authentifiée via login().
+
+    Args:
+        session: Session requests authentifiée.
+
+    Returns:
+        Dictionnaire JSON contenant les données de consommation pour toutes les
+        granularités (gd/gw/gm/gy), structuré par type de fluide (ex: "EAU").
+
+    Raises:
+        requests.HTTPError: Si le serveur retourne un statut HTTP d'erreur.
+        requests.JSONDecodeError: Si la réponse n'est pas du JSON valide
+            (indique généralement une session non authentifiée).
+    """
     r = session.get(
         f"{BASE_URL}/chartsTeleMeasure.action",
         headers={
@@ -103,6 +134,11 @@ def get_data(session: requests.Session) -> dict:
 # ---------------------------------------------------------------------------
 
 def get_data_dir() -> Path:
+    """Retourne le répertoire de données, en le créant si nécessaire.
+
+    Returns:
+        Chemin absolu du répertoire DATA_DIR (créé avec mkdir -p si absent).
+    """
     path = Path(DATA_DIR)
     path.mkdir(parents=True, exist_ok=True)
     return path
@@ -121,6 +157,15 @@ GRANULARITY_LABELS = {
 
 
 def _build_snapshot_rows(data: dict) -> list[dict]:
+    """Convertit le JSON brut du portail en liste de lignes CSV normalisées.
+
+    Args:
+        data: Dictionnaire JSON retourné par get_data().
+
+    Returns:
+        Liste de dicts avec les clés : type, granularite, periode, unite, total,
+        et une colonne par label (Télérelève, Fuite en cours, Fraude).
+    """
     rows = []
     for type_key, type_data in data.items():
         if not isinstance(type_data, dict):
@@ -143,6 +188,12 @@ def _build_snapshot_rows(data: dict) -> list[dict]:
 
 
 def save_snapshot(data: dict, filepath: Path):
+    """Sauvegarde un snapshot complet (toutes granularités) dans un CSV horodaté.
+
+    Args:
+        data: Dictionnaire JSON retourné par get_data().
+        filepath: Chemin du fichier CSV à créer (ex: data/conso_20260522_083000.csv).
+    """
     rows = _build_snapshot_rows(data)
     if rows:
         with open(filepath, "w", newline="", encoding="utf-8") as f:
@@ -153,11 +204,30 @@ def save_snapshot(data: dict, filepath: Path):
 
 
 def find_latest_snapshot(data_dir: Path) -> Path | None:
+    """Retourne le snapshot CSV le plus récent dans le répertoire de données.
+
+    Args:
+        data_dir: Répertoire contenant les fichiers conso_YYYYMMDD_HHMMSS.csv.
+
+    Returns:
+        Chemin du snapshot le plus récent, ou None si aucun n'existe.
+    """
     snapshots = sorted(data_dir.glob("conso_????????_??????.csv"))
     return snapshots[-1] if snapshots else None
 
 
 def today_in_incremental_csv(csv_path: Path) -> bool:
+    """Vérifie si la date du jour est déjà présente dans le CSV incrémental.
+
+    Utilisé pour éviter un appel inutile au service quand les données du jour
+    ont déjà été récupérées lors d'une exécution précédente.
+
+    Args:
+        csv_path: Chemin vers conso_quotidienne.csv.
+
+    Returns:
+        True si une ligne avec la période JJ/MM du jour est trouvée.
+    """
     if not csv_path.exists():
         return False
     today = datetime.now().strftime("%d/%m")
@@ -166,6 +236,15 @@ def today_in_incremental_csv(csv_path: Path) -> bool:
 
 
 def data_changed(new_data: dict, last_snapshot: Path) -> bool:
+    """Compare les nouvelles données avec le dernier snapshot pour détecter un changement.
+
+    Args:
+        new_data: Dictionnaire JSON fraîchement récupéré depuis le portail.
+        last_snapshot: Chemin du CSV snapshot le plus récent.
+
+    Returns:
+        True si les données diffèrent du snapshot (un nouveau snapshot doit être écrit).
+    """
     new_rows = {tuple(sorted(r.items())) for r in _build_snapshot_rows(new_data)}
     with open(last_snapshot, newline="", encoding="utf-8") as f:
         old_rows = {tuple(sorted(r.items())) for r in csv.DictReader(f)}
@@ -184,6 +263,19 @@ def _sort_key(label: str) -> tuple:
 
 
 def update_incremental_csv(daily_entries: list, filepath: Path) -> int:
+    """Ajoute les nouvelles entrées journalières au CSV incrémental.
+
+    Lit le fichier existant, n'insère que les périodes absentes (idempotent),
+    puis réécrit le fichier trié par date chronologique.
+
+    Args:
+        daily_entries: Liste d'entrées xdatas journalières au format
+            [[telereleve, fuite, fraude], "JJ/MM", total].
+        filepath: Chemin vers conso_quotidienne.csv.
+
+    Returns:
+        Nombre de nouvelles lignes ajoutées.
+    """
     existing = {}
     if filepath.exists():
         with open(filepath, newline="", encoding="utf-8") as f:
@@ -215,6 +307,17 @@ def update_incremental_csv(daily_entries: list, filepath: Path) -> int:
 # ---------------------------------------------------------------------------
 
 def get_last_completed_day(daily_entries: list) -> tuple[str, float] | None:
+    """Retourne le dernier jour complété (total > 0) autre que la date du jour.
+
+    Le jour courant est exclu car sa consommation peut être partielle.
+
+    Args:
+        daily_entries: Liste d'entrées xdatas journalières au format
+            [[telereleve, fuite, fraude], "JJ/MM", total].
+
+    Returns:
+        Tuple (label_date, total_litres) du dernier jour complété, ou None.
+    """
     today = datetime.now().strftime("%d/%m")
     for entry in reversed(daily_entries):
         _, label, total = entry[0], entry[1], entry[2]
@@ -224,16 +327,39 @@ def get_last_completed_day(daily_entries: list) -> tuple[str, float] | None:
 
 
 def check_alert_already_sent(alert_file: Path, date_label: str) -> bool:
+    """Vérifie si une alerte a déjà été envoyée pour cette date.
+
+    Args:
+        alert_file: Fichier .last_alert contenant la dernière date alertée.
+        date_label: Label de date au format "JJ/MM".
+
+    Returns:
+        True si l'alerte pour cette date a déjà été envoyée.
+    """
     if not alert_file.exists():
         return False
     return alert_file.read_text().strip() == date_label
 
 
 def mark_alert_sent(alert_file: Path, date_label: str):
+    """Enregistre la date pour laquelle une alerte vient d'être envoyée.
+
+    Args:
+        alert_file: Fichier .last_alert à mettre à jour.
+        date_label: Label de date au format "JJ/MM".
+    """
     alert_file.write_text(date_label)
 
 
 def send_alert_email(csv_path: Path, date_label: str, valeur: float, seuil: float):
+    """Envoie un email d'alerte avec le CSV en pièce jointe via SMTP Gmail.
+
+    Args:
+        csv_path: Chemin du CSV à joindre (dernier snapshot ou conso_quotidienne.csv).
+        date_label: Label de la date concernée au format "JJ/MM".
+        valeur: Consommation journalière en litres.
+        seuil: Seuil configuré en litres (SEUIL_JOURNALIER).
+    """
     msg = MIMEMultipart()
     msg["From"]    = EMAIL_FROM
     msg["To"]      = ", ".join(EMAIL_TO)
