@@ -30,7 +30,7 @@ SMTP_PASSWORD = os.getenv("SMTP_PASSWORD")
 EMAIL_FROM    = os.getenv("EMAIL_FROM")
 EMAIL_TO      = [e.strip() for e in os.getenv("EMAIL_TO", "").split(",") if e.strip()]
 
-DAILY_CSV_COLUMNS = ["periode", "total", "Télérelève", "Fuite en cours", "Fraude", "unite"]
+DAILY_CSV_COLUMNS = ["periode", "total", "Télérelève", "Fuite en cours", "Fraude", "unite", "mise à jour"]
 
 
 # ---------------------------------------------------------------------------
@@ -185,9 +185,9 @@ def _label_to_iso(label: str, granularity: str) -> str:
         y = today.year if m <= today.month else today.year - 1
         return f"{y}-{m:02d}-{d:02d}"
 
-    if granularity == "mensuel":         # "05/2026" → "2026-05"
+    if granularity == "mensuel":         # "05/2026" → "2026-05-01"
         m, y = int(label[:2]), int(label[3:])
-        return f"{y}-{m:02d}"
+        return f"{y}-{m:02d}-01"
 
     return label                         # "2025" → "2025"
 
@@ -318,7 +318,8 @@ def update_incremental_csv(daily_entries: list, filepath: Path) -> int:
         values, label, total = entry[0], entry[1], entry[2]
         iso_label = _label_to_iso(label, "journalier")
         if iso_label not in existing:
-            row = {"periode": iso_label, "total": total, "unite": "Litre"}
+            row = {"periode": iso_label, "total": total, "unite": "Litre",
+                   "mise à jour": datetime.now().isoformat(timespec="seconds")}
             for i, col in enumerate(col_names):
                 row[col] = values[i] if i < len(values) else 0.0
             existing[iso_label] = row
