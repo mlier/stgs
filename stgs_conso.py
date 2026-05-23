@@ -5,12 +5,17 @@ import smtplib
 from datetime import datetime, timedelta, timezone
 from email import encoders
 from email.mime.base import MIMEBase
+from email.mime.image import MIMEImage
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from html.parser import HTMLParser
 from pathlib import Path
 from urllib.parse import urlparse
 
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+import pandas as pd
 import requests
 from dotenv import load_dotenv
 
@@ -421,6 +426,127 @@ def send_alert_email(csv_path: Path, date_label: str, valeur: float, seuil: floa
 
 
 # ---------------------------------------------------------------------------
+# Histogrammes et rapport email
+# ---------------------------------------------------------------------------
+
+def build_charts(csv_path: Path, data_dir: Path, timestamp: str) -> list[Path]:
+    """Génère les histogrammes de consommation depuis conso_quotidienne.csv.
+
+    Produit jusqu'à 4 PNG horodatés dans data_dir :
+    hist_15j_YYYYMMDD_HHMMSS.png, etc. Un graphique est omis si les données
+    sont insuffisantes.
+
+    Args:
+        csv_path: Chemin vers conso_quotidienne.csv.
+        data_dir: Répertoire de sortie pour les PNG.
+        timestamp: Horodatage au format YYYYMMDD_HHMMSS (partagé avec le snapshot).
+
+    Returns:
+        Liste des chemins PNG effectivement créés.
+    """
+    if not csv_path.exists():
+        return []
+
+    df = pd.read_csv(csv_path)
+    df["date"] = pd.to_datetime(df["date"])
+    df["total"] = df["total"].astype(float)
+    df = df.sort_values("date").reset_index(drop=True)
+
+    images: list[Path] = []
+
+    def _save(fig, path: Path) -> Path:
+        plt.tight_layout()
+        plt.savefig(path, dpi=100)
+        plt.close(fig)
+        return path
+
+    # 15 derniers jours (min 3 valeurs > 0)
+    last15 = df.tail(15)
+    if (last15["total"] > 0).sum() >= 3:
+        fig, ax = plt.subplots(figsize=(10, 4))
+        ax.bar(last15["date"].dt.strftime("%d/%m"), last15["total"], color="steelblue")
+        ax.set_ylabel("Litres")
+        ax.set_title("Consommation — 15 derniers jours")
+        plt.xticks(rotation=45, ha="right")
+        images.append(_save(fig, data_dir / f"hist_15j_{timestamp}.png"))
+
+    # Semaines (min 1, max 56)
+    weekly = df.groupby(df["date"].dt.to_period("W"))["total"].sum().tail(56)
+    if len(weekly) >= 1:
+        labels = [p.start_time.strftime("%d/%m/%y") for p in weekly.index]
+        fig, ax = plt.subplots(figsize=(10, 4))
+        ax.bar(labels, weekly.values, color="steelblue")
+        ax.set_ylabel("Litres")
+        ax.set_title("Consommation hebdomadaire")
+        plt.xticks(rotation=45, ha="right")
+        images.append(_save(fig, data_dir / f"hist_semaines_{timestamp}.png"))
+
+    # Mois (min 1, max 24)
+    monthly = df.groupby(df["date"].dt.to_period("M"))["total"].sum().tail(24)
+    if len(monthly) >= 1:
+        labels = monthly.index.strftime("%m/%Y")
+        fig, ax = plt.subplots(figsize=(10, 4))
+        ax.bar(labels, monthly.values, color="steelblue")
+        ax.set_ylabel("Litres")
+        ax.set_title("Consommation mensuelle")
+        plt.xticks(rotation=45, ha="right")
+        images.append(_save(fig, data_dir / f"hist_mois_{timestamp}.png"))
+
+    # Années (min 1 entrée)
+    yearly = df.groupby(df["date"].dt.to_period("Y"))["total"].sum()
+    if len(yearly) >= 1:
+        labels = yearly.index.strftime("%Y")
+        fig, ax = plt.subplots(figsize=(10, 4))
+        ax.bar(labels, yearly.values, color="steelblue")
+        ax.set_ylabel("Litres")
+        ax.set_title("Consommation annuelle")
+        plt.xticks(rotation=45, ha="right")
+        images.append(_save(fig, data_dir / f"hist_annees_{timestamp}.png"))
+
+    return images
+
+
+def send_report_email(images: list[Path], csv_path: Path):
+    """Envoie le rapport de consommation par email avec histogrammes en pièces jointes.
+
+    Args:
+        images: Liste des chemins PNG à joindre.
+        csv_path: Chemin de conso_quotidienne.csv à joindre.
+    """
+    msg = MIMEMultipart()
+    msg["From"]    = EMAIL_FROM
+    msg["To"]      = ", ".join(EMAIL_TO)
+    msg["Subject"] = f"[CONSO EAU] Rapport du {datetime.now().strftime('%Y-%m-%d')}"
+
+    body = (
+        f"Rapport de consommation d'eau\n\n"
+        f"Date     : {datetime.now().strftime('%Y-%m-%d %H:%M')}\n"
+        f"Graphiques joints : {len(images)}\n"
+    )
+    msg.attach(MIMEText(body, "plain", "utf-8"))
+
+    for img_path in images:
+        with open(img_path, "rb") as f:
+            part = MIMEImage(f.read(), "png")
+        part.add_header("Content-Disposition", f"attachment; filename={img_path.name}")
+        msg.attach(part)
+
+    with open(csv_path, "rb") as f:
+        part = MIMEBase("application", "octet-stream")
+        part.set_payload(f.read())
+    encoders.encode_base64(part)
+    part.add_header("Content-Disposition", f"attachment; filename={csv_path.name}")
+    msg.attach(part)
+
+    with smtplib.SMTP(SMTP_HOST, SMTP_PORT) as smtp:
+        smtp.starttls()
+        smtp.login(SMTP_LOGIN, SMTP_PASSWORD)
+        smtp.sendmail(EMAIL_FROM, EMAIL_TO, msg.as_string())
+
+    print(f"  Rapport envoyé à : {', '.join(EMAIL_TO)}")
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
@@ -461,6 +587,15 @@ if __name__ == "__main__":
     # CSV incrémental journalier
     added, updated = update_incremental_csv(daily_entries, csv_path)
     print(f"CSV incrémental mis à jour : {csv_path} ({added} ajout(s), {updated} mise(s) à jour)")
+
+    # Rapport email avec histogrammes
+    images = build_charts(csv_path, data_dir, timestamp)
+    if images and EMAIL_TO:
+        try:
+            send_report_email(images, csv_path)
+            print(f"  Rapport envoyé ({len(images)} graphique(s)).")
+        except Exception as e:
+            print(f"  Erreur envoi rapport : {e}")
 
     # Alerte seuil (désactivée si SEUIL_JOURNALIER=0)
     if SEUIL_JOURNALIER >= 0:
