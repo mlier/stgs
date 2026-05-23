@@ -34,6 +34,7 @@ SMTP_LOGIN    = os.getenv("SMTP_LOGIN")
 SMTP_PASSWORD = os.getenv("SMTP_PASSWORD")
 EMAIL_FROM    = os.getenv("EMAIL_FROM")
 EMAIL_TO      = [e.strip() for e in os.getenv("EMAIL_TO", "").split(",") if e.strip()]
+PLACE_NAME    = os.getenv("PLACE_NAME", "")
 
 DAILY_CSV_COLUMNS = ["date", "periode", "total", "Télérelève", "Fuite en cours", "Fraude", "unite", "mise à jour"]
 
@@ -397,8 +398,8 @@ def send_alert_email(csv_path: Path, date_label: str, valeur: float, seuil: floa
     msg["From"]    = EMAIL_FROM
     msg["To"]      = ", ".join(EMAIL_TO)
     msg["Subject"] = (
-        f"[ALERTE EAU] Consommation {valeur:.0f}L le {date_label}"
-        f" — seuil {seuil:.0f}L dépassé"
+        f"[ALERTE EAU]{' ' + PLACE_NAME + ' —' if PLACE_NAME else ''}"
+        f" Consommation {valeur:.0f}L le {date_label} — seuil {seuil:.0f}L dépassé"
     )
 
     body = (
@@ -516,7 +517,7 @@ def send_report_email(images: list[Path], csv_path: Path):
     msg = MIMEMultipart()
     msg["From"]    = EMAIL_FROM
     msg["To"]      = ", ".join(EMAIL_TO)
-    msg["Subject"] = f"[CONSO EAU] Rapport du {datetime.now().strftime('%Y-%m-%d')}"
+    msg["Subject"] = f"[CONSO EAU]{' ' + PLACE_NAME + ' —' if PLACE_NAME else ''} Rapport du {datetime.now().strftime('%Y-%m-%d')}"
 
     body = (
         f"Rapport de consommation d'eau\n\n"
