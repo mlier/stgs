@@ -2,7 +2,7 @@ import csv
 import json
 import os
 import smtplib
-from datetime import datetime
+from datetime import datetime, timedelta
 from email import encoders
 from email.mime.base import MIMEBase
 from email.mime.multipart import MIMEMultipart
@@ -252,27 +252,38 @@ def find_latest_snapshot(data_dir: Path) -> Path | None:
     return snapshots[-1] if snapshots else None
 
 
-def today_in_incremental_csv(csv_path: Path) -> bool:
-    """Vérifie si la date du jour est déjà présente dans le CSV incrémental.
+def needs_fetch(csv_path: Path) -> bool:
+    """Retourne True si une interrogation du site est nécessaire.
 
-    Utilisé pour éviter un appel inutile au service quand les données du jour
-    ont déjà été récupérées lors d'une exécution précédente.
+    Fetch si le CSV n'existe pas, si la ligne d'hier est absente (nouvelle
+    journée), ou si une ligne passée est encore à zéro (données pas encore
+    transmises sur le portail).
 
     Args:
         csv_path: Chemin vers conso_quotidienne.csv.
 
     Returns:
-        True si une ligne avec la période YYYY-MM-DD du jour est trouvée.
+        True si un appel au service est nécessaire.
     """
     if not csv_path.exists():
-        return False
+        return True
     today = datetime.now().strftime("%Y-%m-%d")
+    yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
     with open(csv_path, newline="", encoding="utf-8") as f:
-        return any(row["periode"] == today for row in csv.DictReader(f))
+        rows = list(csv.DictReader(f))
+    if not any(row.get("periode", "") == yesterday for row in rows):
+        return True
+    return any(
+        float(row.get("total", "0")) == 0 and row.get("periode", "") < today
+        for row in rows
+    )
 
 
 def data_changed(new_data: dict, last_snapshot: Path) -> bool:
     """Compare les nouvelles données avec le dernier snapshot pour détecter un changement.
+
+    Toutes les valeurs sont normalisées en str avant comparaison pour éviter
+    les faux positifs entre valeurs numériques JSON (int/float) et chaînes CSV.
 
     Args:
         new_data: Dictionnaire JSON fraîchement récupéré depuis le portail.
@@ -281,9 +292,11 @@ def data_changed(new_data: dict, last_snapshot: Path) -> bool:
     Returns:
         True si les données diffèrent du snapshot (un nouveau snapshot doit être écrit).
     """
-    new_rows = {tuple(sorted(r.items())) for r in _build_snapshot_rows(new_data)}
+    def normalize(r):
+        return tuple(sorted((k, str(v)) for k, v in r.items()))
+    new_rows = {normalize(r) for r in _build_snapshot_rows(new_data)}
     with open(last_snapshot, newline="", encoding="utf-8") as f:
-        old_rows = {tuple(sorted(r.items())) for r in csv.DictReader(f)}
+        old_rows = {normalize(r) for r in csv.DictReader(f)}
     return new_rows != old_rows
 
 
@@ -291,12 +304,12 @@ def data_changed(new_data: dict, last_snapshot: Path) -> bool:
 # CSV incrémental journalier
 # ---------------------------------------------------------------------------
 
-def update_incremental_csv(daily_entries: list, filepath: Path) -> int:
-    """Ajoute les nouvelles entrées journalières au CSV incrémental.
+def update_incremental_csv(daily_entries: list, filepath: Path) -> tuple[int, int]:
+    """Ajoute ou met à jour les entrées journalières dans le CSV incrémental.
 
-    Lit le fichier existant, n'insère que les périodes absentes (idempotent),
-    puis réécrit le fichier trié chronologiquement. Les dates sont stockées
-    au format ISO "YYYY-MM-DD".
+    Insère les nouvelles périodes et écrase les existantes si la valeur a changé.
+    Met à jour le timestamp "mise à jour" à chaque insertion ou modification.
+    Les dates sont stockées au format ISO "YYYY-MM-DD".
 
     Args:
         daily_entries: Liste d'entrées xdatas journalières au format
@@ -304,7 +317,7 @@ def update_incremental_csv(daily_entries: list, filepath: Path) -> int:
         filepath: Chemin vers conso_quotidienne.csv.
 
     Returns:
-        Nombre de nouvelles lignes ajoutées.
+        Tuple (ajouts, mises_à_jour) comptant les lignes créées et modifiées.
     """
     existing = {}
     if filepath.exists():
@@ -313,17 +326,24 @@ def update_incremental_csv(daily_entries: list, filepath: Path) -> int:
                 existing[row["periode"]] = row
 
     col_names = ["Télérelève", "Fuite en cours", "Fraude"]
-    added = 0
+    added, updated = 0, 0
+    now = datetime.now().isoformat(timespec="seconds")
     for entry in daily_entries:
         values, label, total = entry[0], entry[1], entry[2]
         iso_label = _label_to_iso(label, "journalier")
+        new_row = {"periode": iso_label, "total": total, "unite": "Litre",
+                   "mise à jour": now}
+        for i, col in enumerate(col_names):
+            new_row[col] = values[i] if i < len(values) else 0.0
         if iso_label not in existing:
-            row = {"periode": iso_label, "total": total, "unite": "Litre",
-                   "mise à jour": datetime.now().isoformat(timespec="seconds")}
-            for i, col in enumerate(col_names):
-                row[col] = values[i] if i < len(values) else 0.0
-            existing[iso_label] = row
+            existing[iso_label] = new_row
             added += 1
+        elif float(existing[iso_label]["total"]) != float(total):
+            existing[iso_label] = new_row
+            updated += 1
+
+    if added == 0 and updated == 0:
+        return added, updated
 
     rows = sorted(existing.values(), key=lambda r: r["periode"])
     with open(filepath, "w", newline="", encoding="utf-8") as f:
@@ -331,7 +351,7 @@ def update_incremental_csv(daily_entries: list, filepath: Path) -> int:
         writer.writeheader()
         writer.writerows(rows)
 
-    return added
+    return added, updated
 
 
 # ---------------------------------------------------------------------------
@@ -433,8 +453,8 @@ if __name__ == "__main__":
     data_dir = get_data_dir()
     csv_path = data_dir / "conso_quotidienne.csv"
 
-    if today_in_incremental_csv(csv_path):
-        print("Données du jour déjà présentes dans le CSV — aucun appel au service.")
+    if not needs_fetch(csv_path):
+        print("Données à jour — aucun appel au service nécessaire.")
         raise SystemExit(0)
 
     latest = find_latest_snapshot(data_dir)
@@ -468,8 +488,8 @@ if __name__ == "__main__":
         last_csv = latest
 
     # CSV incrémental journalier
-    added = update_incremental_csv(daily_entries, csv_path)
-    print(f"CSV incrémental mis à jour : {csv_path} ({added} nouveau(x) jour(s))")
+    added, updated = update_incremental_csv(daily_entries, csv_path)
+    print(f"CSV incrémental mis à jour : {csv_path} ({added} ajout(s), {updated} mise(s) à jour)")
 
     # Alerte seuil (désactivée si SEUIL_JOURNALIER=0)
     if SEUIL_JOURNALIER >= 0:

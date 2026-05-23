@@ -1,4 +1,4 @@
-# stgs-conso
+# Suivi de la consommation d'eau du founisseur STGS
 
 Extraction automatique des données de consommation d'eau depuis le portail **"Agence en Ligne"** (STGS).
 
@@ -43,6 +43,23 @@ Le script se connecte au portail, récupère les données et génère un fichier
 | `Télérelève` | Part télérelève |
 | `Fuite en cours` | Part fuite détectée |
 | `Fraude` | Part fraude détectée |
+
+## Calendrier de remontée des données
+
+Le portail fonctionne avec un décalage de 2 jours :
+
+| Jour | Rôle |
+|------|------|
+| J-2  | Consommation réelle mesurée |
+| J-1  | Label affiché dans le CSV (`periode`) |
+| J    | Transmission sur le portail (généralement l'après-midi) |
+
+Exemple : le 23 mai, la ligne `2026-05-22` contient la consommation du 21 mai.
+Sa valeur est à 0 jusqu'à la transmission de l'après-midi.
+
+Le script interroge le portail à chaque exécution jusqu'à ce que toutes les
+valeurs des jours précédents aient été reçues. Il s'arrête dès que tout est
+à jour, évitant les appels inutiles si on le lance plusieurs fois dans la journée.
 
 ## Limites
 
