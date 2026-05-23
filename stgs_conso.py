@@ -252,32 +252,6 @@ def find_latest_snapshot(data_dir: Path) -> Path | None:
     return snapshots[-1] if snapshots else None
 
 
-def needs_fetch(csv_path: Path) -> bool:
-    """Retourne True si une interrogation du site est nécessaire.
-
-    Fetch si le CSV n'existe pas, si la ligne d'hier est absente (nouvelle
-    journée), ou si une ligne passée est encore à zéro (données pas encore
-    transmises sur le portail).
-
-    Args:
-        csv_path: Chemin vers conso_quotidienne.csv.
-
-    Returns:
-        True si un appel au service est nécessaire.
-    """
-    if not csv_path.exists():
-        return True
-    today = datetime.now().strftime("%Y-%m-%d")
-    yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
-    with open(csv_path, newline="", encoding="utf-8") as f:
-        rows = list(csv.DictReader(f))
-    if not any(row.get("periode", "") == yesterday for row in rows):
-        return True
-    return any(
-        float(row.get("total", "0")) == 0 and row.get("periode", "") < today
-        for row in rows
-    )
-
 
 def data_changed(new_data: dict, last_snapshot: Path) -> bool:
     """Compare les nouvelles données avec le dernier snapshot pour détecter un changement.
@@ -453,10 +427,6 @@ def send_alert_email(csv_path: Path, date_label: str, valeur: float, seuil: floa
 if __name__ == "__main__":
     data_dir = get_data_dir()
     csv_path = data_dir / "conso_quotidienne.csv"
-
-    if not needs_fetch(csv_path):
-        print("Données à jour — aucun appel au service nécessaire.")
-        raise SystemExit(0)
 
     latest = find_latest_snapshot(data_dir)
 

@@ -35,14 +35,16 @@ Le script se connecte au portail, récupère les données et génère un fichier
 
 | Colonne | Description |
 |---------|-------------|
+| `date` | Date réelle de consommation (= `periode` − 1 jour) |
 | `type` | Nature du fluide (Eau) |
 | `granularite` | journalier / hebdomadaire / mensuel / annuel |
-| `periode` | Label de la période (ex: `16/05`, `S 11/05`, `05/2026`, `2025`) |
+| `periode` | Label J-1 affiché sur le portail (ex: `2026-05-22`) |
 | `unite` | Litre |
 | `total` | Consommation totale en litres |
 | `Télérelève` | Part télérelève |
 | `Fuite en cours` | Part fuite détectée |
 | `Fraude` | Part fraude détectée |
+| `mise à jour` | Date et heure ISO de la dernière modification de la ligne |
 
 ## Calendrier de remontée des données
 
@@ -54,12 +56,13 @@ Le portail fonctionne avec un décalage de 2 jours :
 | J-1  | Label affiché dans le CSV (`periode`) |
 | J    | Transmission sur le portail (généralement l'après-midi) |
 
-Exemple : le 23 mai, la ligne `2026-05-22` contient la consommation du 21 mai.
-Sa valeur est à 0 jusqu'à la transmission de l'après-midi.
+Exemple : le 23 mai, la ligne `periode=2026-05-22` contient la consommation
+du 21 mai (`date=2026-05-21`). Sa valeur est transmise dans l'après-midi du 23.
 
-Le script interroge le portail à chaque exécution jusqu'à ce que toutes les
-valeurs des jours précédents aient été reçues. Il s'arrête dès que tout est
-à jour, évitant les appels inutiles si on le lance plusieurs fois dans la journée.
+Les valeurs d'une période passée peuvent être corrigées par le portail à tout
+moment. Le script interroge donc systématiquement le portail à chaque exécution.
+Il ne crée ou modifie des fichiers que si les données ont réellement changé
+depuis la dernière lecture — aucune écriture si tout est identique.
 
 ## Limites
 
