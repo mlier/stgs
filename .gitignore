@@ -8,7 +8,13 @@ wheels/
 
 # Virtual environments
 .venv
+uv.lock
 
 # Environnement
 .env
 CLAUDE.md
+
+# Data
+data 
+log 
+

@@ -35,8 +35,19 @@ SMTP_PASSWORD = os.getenv("SMTP_PASSWORD")
 EMAIL_FROM    = os.getenv("EMAIL_FROM")
 EMAIL_TO      = [e.strip() for e in os.getenv("EMAIL_TO", "").split(",") if e.strip()]
 PLACE_NAME    = os.getenv("PLACE_NAME", "")
+LOG_FILE      = os.getenv("LOG_FILE", "")
 
 DAILY_CSV_COLUMNS = ["date", "periode", "total", "Télérelève", "Fuite en cours", "Fraude", "unite", "mise à jour"]
+
+
+def _log(message: str, level: str = "INFO") -> None:
+    """Affiche un message horodaté sur la console et l'écrit dans LOG_FILE si défini."""
+    line = f"{datetime.now(timezone.utc).isoformat(timespec='seconds')} [{level}] {message}"
+    print(line)
+    if LOG_FILE:
+        Path(LOG_FILE).parent.mkdir(parents=True, exist_ok=True)
+        with open(LOG_FILE, "a", encoding="utf-8") as f:
+            f.write(line + "\n")
 
 
 # ---------------------------------------------------------------------------
@@ -242,7 +253,7 @@ def save_snapshot(data: dict, filepath: Path):
             writer = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
             writer.writeheader()
             writer.writerows(rows)
-        print(f"Snapshot sauvegardé : {filepath}")
+        _log(f"Snapshot sauvegardé : {filepath}")
 
 
 def find_latest_snapshot(data_dir: Path) -> Path | None:
@@ -423,7 +434,7 @@ def send_alert_email(csv_path: Path, date_label: str, valeur: float, seuil: floa
         smtp.login(SMTP_LOGIN, SMTP_PASSWORD)
         smtp.sendmail(EMAIL_FROM, EMAIL_TO, msg.as_string())
 
-    print(f"  Email d'alerte envoyé à : {', '.join(EMAIL_TO)}")
+    _log(f"Email d'alerte envoyé à : {', '.join(EMAIL_TO)}")
 
 
 # ---------------------------------------------------------------------------
@@ -544,7 +555,7 @@ def send_report_email(images: list[Path], csv_path: Path):
         smtp.login(SMTP_LOGIN, SMTP_PASSWORD)
         smtp.sendmail(EMAIL_FROM, EMAIL_TO, msg.as_string())
 
-    print(f"  Rapport envoyé à : {', '.join(EMAIL_TO)}")
+    _log(f"Rapport envoyé à : {', '.join(EMAIL_TO)}")
 
 
 # ---------------------------------------------------------------------------
@@ -562,18 +573,18 @@ if __name__ == "__main__":
         "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"
     })
 
-    print("Connexion en cours...")
+    _log("Connexion en cours...")
     if not login(session):
-        print("Connexion incertaine — vérifiez login/password dans .env")
+        _log("Connexion incertaine — vérifiez login/password dans .env", "WARNING")
     else:
-        print("Connecté.")
+        _log("Connecté.")
 
     data          = get_data(session)
     daily_entries = data.get("EAU", {}).get("gd", {}).get("xdatas", [])
 
     json_path = data_dir / "data_raw.json"
     json_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-    print(f"JSON brut sauvegardé : {json_path}")
+    _log(f"JSON brut sauvegardé : {json_path}")
 
     # Snapshot conditionnel
     timestamp     = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -582,21 +593,21 @@ if __name__ == "__main__":
         save_snapshot(data, snapshot_path)
         last_csv = snapshot_path
     else:
-        print("Données identiques au dernier snapshot — écriture ignorée.")
+        _log("Données identiques au dernier snapshot — écriture ignorée.")
         last_csv = latest
 
     # CSV incrémental journalier
     added, updated = update_incremental_csv(daily_entries, csv_path)
-    print(f"CSV incrémental mis à jour : {csv_path} ({added} ajout(s), {updated} mise(s) à jour)")
+    _log(f"CSV incrémental mis à jour : {csv_path} ({added} ajout(s), {updated} mise(s) à jour)")
 
     # Rapport email avec histogrammes
     images = build_charts(csv_path, data_dir, timestamp)
     if images and EMAIL_TO:
         try:
             send_report_email(images, csv_path)
-            print(f"  Rapport envoyé ({len(images)} graphique(s)).")
+            _log(f"Rapport envoyé ({len(images)} graphique(s)).")
         except Exception as e:
-            print(f"  Erreur envoi rapport : {e}")
+            _log(f"Erreur envoi rapport : {e}", "ERROR")
 
     # Alerte seuil (désactivée si SEUIL_JOURNALIER=0)
     if SEUIL_JOURNALIER >= 0:
@@ -606,12 +617,12 @@ if __name__ == "__main__":
             if valeur > SEUIL_JOURNALIER:
                 alert_file = data_dir / ".last_alert"
                 if check_alert_already_sent(alert_file, date_label):
-                    print(f"  Seuil dépassé le {date_label} ({valeur:.0f}L) — alerte déjà envoyée.")
+                    _log(f"Seuil dépassé le {date_label} ({valeur:.0f}L) — alerte déjà envoyée.")
                 else:
-                    print(f"  Seuil dépassé le {date_label} ({valeur:.0f}L > {SEUIL_JOURNALIER:.0f}L) — envoi email...")
+                    _log(f"Seuil dépassé le {date_label} ({valeur:.0f}L > {SEUIL_JOURNALIER:.0f}L) — envoi email...")
                     try:
                         send_alert_email(last_csv, date_label, valeur, SEUIL_JOURNALIER)
                         mark_alert_sent(alert_file, date_label)
                     except Exception as e:
-                        print(f"  Erreur envoi email : {e}")
-                        print("  Vérifiez SMTP_PASSWORD dans .env (mot de passe d'application Google requis).")
+                        _log(f"Erreur envoi email : {e}", "ERROR")
+                        _log("Vérifiez SMTP_PASSWORD dans .env (mot de passe d'application Google requis).", "ERROR")
