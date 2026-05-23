@@ -30,7 +30,7 @@ SMTP_PASSWORD = os.getenv("SMTP_PASSWORD")
 EMAIL_FROM    = os.getenv("EMAIL_FROM")
 EMAIL_TO      = [e.strip() for e in os.getenv("EMAIL_TO", "").split(",") if e.strip()]
 
-DAILY_CSV_COLUMNS = ["periode", "total", "Télérelève", "Fuite en cours", "Fraude", "unite", "mise à jour"]
+DAILY_CSV_COLUMNS = ["date", "periode", "total", "Télérelève", "Fuite en cours", "Fraude", "unite", "mise à jour"]
 
 
 # ---------------------------------------------------------------------------
@@ -331,7 +331,8 @@ def update_incremental_csv(daily_entries: list, filepath: Path) -> tuple[int, in
     for entry in daily_entries:
         values, label, total = entry[0], entry[1], entry[2]
         iso_label = _label_to_iso(label, "journalier")
-        new_row = {"periode": iso_label, "total": total, "unite": "Litre",
+        real_date = (datetime.strptime(iso_label, "%Y-%m-%d") - timedelta(days=1)).strftime("%Y-%m-%d")
+        new_row = {"date": real_date, "periode": iso_label, "total": total, "unite": "Litre",
                    "mise à jour": now}
         for i, col in enumerate(col_names):
             new_row[col] = values[i] if i < len(values) else 0.0
