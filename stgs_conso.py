@@ -2,7 +2,7 @@ import csv
 import json
 import os
 import smtplib
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from email import encoders
 from email.mime.base import MIMEBase
 from email.mime.multipart import MIMEMultipart
@@ -301,7 +301,7 @@ def update_incremental_csv(daily_entries: list, filepath: Path) -> tuple[int, in
 
     col_names = ["Télérelève", "Fuite en cours", "Fraude"]
     added, updated = 0, 0
-    now = datetime.now().isoformat(timespec="seconds")
+    now = datetime.now(timezone.utc).isoformat(timespec="seconds")
     for entry in daily_entries:
         values, label, total = entry[0], entry[1], entry[2]
         iso_label = _label_to_iso(label, "journalier")
