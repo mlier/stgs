@@ -2,6 +2,16 @@
 
 Extraction automatique des données de consommation d'eau depuis le portail **"Agence en Ligne"** (STGS).
 
+## Fonctionnalités
+
+- **Authentification automatique** — connexion au portail via parsing dynamique du formulaire HTML (compatible avec le système de tokens Struts)
+- **Extraction multi-granularité** — récupération des données sur 4 périodes : journalier (10 derniers jours), hebdomadaire, mensuel (12 mois), annuel (3 ans)
+- **Snapshot CSV horodaté** — sauvegarde dans `conso_YYYYMMDD_HHMMSS.csv` uniquement si les données ont changé depuis la dernière lecture
+- **CSV incrémental journalier** — `conso_quotidienne.csv` maintenu à jour à chaque exécution (nouvelles entrées ajoutées, corrections appliquées)
+- **Alertes email** — notification si la consommation d'un jour dépasse le seuil configuré (`SEUIL_JOURNALIER`), sans doublon d'envoi
+- **Rapport périodique par email** — histogrammes de consommation sur 4 horizons (15 jours, semaines, mois, années) envoyés en pièces jointes
+- **Logging** — messages horodatés sur la console et dans un fichier optionnel (`LOG_FILE`)
+
 ## Prérequis
 
 - [uv](https://docs.astral.sh/uv/) (gestionnaire de paquets Python)
