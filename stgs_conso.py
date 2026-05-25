@@ -472,18 +472,18 @@ def build_charts(csv_path: Path, data_dir: Path, timestamp: str) -> list[Path]:
         plt.close(fig)
         return path
 
-    # 15 derniers jours (min 3 valeurs > 0)
-    last15 = df.tail(15)
-    if (last15["total"] > 0).sum() >= 3:
+    # 4 dernières semaines (min 3 valeurs > 0)
+    last28 = df.tail(28)
+    if (last28["total"] > 0).sum() >= 3:
         fig, ax = plt.subplots(figsize=(10, 4))
-        ax.bar(last15["date"].dt.strftime("%d/%m"), last15["total"], color="steelblue")
+        ax.bar(last28["date"].dt.strftime("%d/%m"), last28["total"], color="steelblue")
         ax.set_ylabel("Litres")
-        ax.set_title("Consommation — 15 derniers jours")
+        ax.set_title("Consommation — 4 dernières semaines")
         plt.xticks(rotation=45, ha="right")
-        images.append(_save(fig, data_dir / f"hist_15j_{timestamp}.png"))
+        images.append(_save(fig, data_dir / f"hist_4semaines_{timestamp}.png"))
 
-    # Semaines (min 1, max 56)
-    weekly = df.groupby(df["date"].dt.to_period("W"))["total"].sum().tail(56)
+    # 24 dernières semaines
+    weekly = df.groupby(df["date"].dt.to_period("W"))["total"].sum().tail(24)
     if len(weekly) >= 1:
         labels = [p.start_time.strftime("%d/%m/%y") for p in weekly.index]
         fig, ax = plt.subplots(figsize=(10, 4))
@@ -559,6 +559,55 @@ def send_report_email(images: list[Path], csv_path: Path):
 
 
 # ---------------------------------------------------------------------------
+# Planification du rapport email
+# ---------------------------------------------------------------------------
+
+def should_send_report(data_dir: Path, csv_path: Path) -> bool:
+    """Retourne True si le rapport email doit être envoyé lors de cette exécution.
+
+    Règle :
+    - Toujours un lundi.
+    - Moins d'un mois de données → toutes les semaines (intervalle 7 jours).
+    - Un mois de données ou plus  → toutes les 4 semaines (intervalle 28 jours).
+    Le fichier .last_report évite les doublons si le script tourne plusieurs fois par jour.
+    """
+    now = datetime.now()
+
+    if now.weekday() != 0:
+        return False
+
+    monthly_mode = False
+    if csv_path.exists():
+        try:
+            df = pd.read_csv(csv_path)
+            df["date"] = pd.to_datetime(df["date"], errors="coerce")
+            df = df.dropna(subset=["date"])
+            if len(df) >= 2:
+                span = (df["date"].max() - df["date"].min()).days
+                monthly_mode = span >= 30
+        except Exception:
+            pass
+
+    interval = 28 if monthly_mode else 7
+
+    flag = data_dir / ".last_report"
+    if flag.exists():
+        try:
+            last = datetime.strptime(flag.read_text().strip(), "%Y-%m-%d").date()
+            if (now.date() - last).days < interval:
+                return False
+        except ValueError:
+            pass
+
+    return True
+
+
+def mark_report_sent(data_dir: Path) -> None:
+    """Enregistre la date d'envoi du dernier rapport dans .last_report."""
+    (data_dir / ".last_report").write_text(datetime.now().strftime("%Y-%m-%d"))
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
@@ -601,13 +650,22 @@ if __name__ == "__main__":
     _log(f"CSV incrémental mis à jour : {csv_path} ({added} ajout(s), {updated} mise(s) à jour)")
 
     # Rapport email avec histogrammes
-    images = build_charts(csv_path, data_dir, timestamp)
+    try:
+        images = build_charts(csv_path, data_dir, timestamp)
+    except Exception as e:
+        _log(f"Erreur génération graphiques : {e}", "ERROR")
+        images = []
+
     if images and EMAIL_TO:
-        try:
-            send_report_email(images, csv_path)
-            _log(f"Rapport envoyé ({len(images)} graphique(s)).")
-        except Exception as e:
-            _log(f"Erreur envoi rapport : {e}", "ERROR")
+        if should_send_report(data_dir, csv_path):
+            try:
+                send_report_email(images, csv_path)
+                mark_report_sent(data_dir)
+                _log(f"Rapport envoyé ({len(images)} graphique(s)).")
+            except Exception as e:
+                _log(f"Erreur envoi rapport : {e}", "ERROR")
+        else:
+            _log("Rapport non envoyé (hors fenêtre d'envoi planifiée).")
 
     # Alerte seuil (désactivée si SEUIL_JOURNALIER=0)
     if SEUIL_JOURNALIER >= 0:

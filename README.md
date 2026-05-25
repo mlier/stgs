@@ -9,8 +9,30 @@ Extraction automatique des données de consommation d'eau depuis le portail **"A
 - **Snapshot CSV horodaté** — sauvegarde dans `conso_YYYYMMDD_HHMMSS.csv` uniquement si les données ont changé depuis la dernière lecture
 - **CSV incrémental journalier** — `conso_quotidienne.csv` maintenu à jour à chaque exécution (nouvelles entrées ajoutées, corrections appliquées)
 - **Alertes email** — notification si la consommation d'un jour dépasse le seuil configuré (`SEUIL_JOURNALIER`), sans doublon d'envoi
-- **Rapport périodique par email** — histogrammes de consommation sur 4 horizons (15 jours, semaines, mois, années) envoyés en pièces jointes
+- **Rapport périodique par email** — histogrammes de consommation sur 4 horizons envoyés chaque lundi (hebdomadaire au démarrage, toutes les 4 semaines ensuite)
 - **Logging** — messages horodatés sur la console et dans un fichier optionnel (`LOG_FILE`)
+
+## Rapport email
+
+Le script envoie automatiquement un rapport de consommation avec des histogrammes
+en pièces jointes chaque **lundi**, selon une fréquence adaptative :
+
+| Données disponibles | Fréquence d'envoi |
+|---------------------|-------------------|
+| Moins d'un mois     | Chaque lundi |
+| Un mois ou plus     | Un lundi sur 4 (toutes les 4 semaines) |
+
+Le fichier `.last_report` dans le répertoire de données évite les doublons si le
+script s'exécute plusieurs fois dans la journée.
+
+### Fenêtres temporelles des graphiques
+
+| Graphique | Période couverte |
+|-----------|-----------------|
+| Journalier | 4 dernières semaines (28 jours) |
+| Hebdomadaire | 24 dernières semaines |
+| Mensuel | 24 derniers mois |
+| Annuel | Toutes les années disponibles |
 
 ## Prérequis
 
