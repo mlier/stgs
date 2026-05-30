@@ -1,6 +1,7 @@
 import csv
 import json
 import os
+import sys
 import smtplib
 from datetime import datetime, timedelta, timezone
 from email import encoders
@@ -87,7 +88,7 @@ def login(session: requests.Session) -> bool:
     Returns:
         True si l'authentification a réussi, False sinon.
     """
-    r = session.get(f"{BASE_URL}/login.action", allow_redirects=True)
+    r = session.get(f"{BASE_URL}/login.action", allow_redirects=True, timeout=30)
     login_url = r.url
 
     parser = _FormParser()
@@ -109,7 +110,7 @@ def login(session: requests.Session) -> bool:
     else:
         submit_url = f"{BASE_URL}/{action}"
 
-    r = session.post(submit_url, data=post_data, allow_redirects=True)
+    r = session.post(submit_url, data=post_data, allow_redirects=True, timeout=30)
     return "logout" in r.text or "déconnexion" in r.text
 
 
@@ -142,6 +143,7 @@ def get_data(session: requests.Session) -> dict:
             "Accept": "application/json, text/javascript, */*; q=0.01",
             "Referer": f"{BASE_URL}/chartTeleMeasurePage.action",
         },
+        timeout=30,
     )
     r.raise_for_status()
     return r.json()
@@ -429,7 +431,7 @@ def send_alert_email(csv_path: Path, date_label: str, valeur: float, seuil: floa
     part.add_header("Content-Disposition", f"attachment; filename={csv_path.name}")
     msg.attach(part)
 
-    with smtplib.SMTP(SMTP_HOST, SMTP_PORT) as smtp:
+    with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=30) as smtp:
         smtp.starttls()
         smtp.login(SMTP_LOGIN, SMTP_PASSWORD)
         smtp.sendmail(EMAIL_FROM, EMAIL_TO, msg.as_string())
@@ -550,7 +552,7 @@ def send_report_email(images: list[Path], csv_path: Path):
     part.add_header("Content-Disposition", f"attachment; filename={csv_path.name}")
     msg.attach(part)
 
-    with smtplib.SMTP(SMTP_HOST, SMTP_PORT) as smtp:
+    with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=30) as smtp:
         smtp.starttls()
         smtp.login(SMTP_LOGIN, SMTP_PASSWORD)
         smtp.sendmail(EMAIL_FROM, EMAIL_TO, msg.as_string())
@@ -623,12 +625,16 @@ if __name__ == "__main__":
     })
 
     _log("Connexion en cours...")
-    if not login(session):
-        _log("Connexion incertaine — vérifiez login/password dans .env", "WARNING")
-    else:
-        _log("Connecté.")
+    try:
+        if not login(session):
+            _log("Connexion incertaine — vérifiez login/password dans .env", "WARNING")
+        else:
+            _log("Connecté.")
+        data = get_data(session)
+    except requests.exceptions.RequestException as e:
+        _log(f"Erreur réseau : {e} — prochain essai dans 1h.", "ERROR")
+        sys.exit(0)
 
-    data          = get_data(session)
     daily_entries = data.get("EAU", {}).get("gd", {}).get("xdatas", [])
 
     json_path = data_dir / "data_raw.json"

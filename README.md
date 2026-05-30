@@ -1,4 +1,4 @@
-# Suivi de la consommation d'eau du founisseur STGS
+# Suivi de la consommation d'eau du fournisseur STGS
 
 Extraction automatique des données de consommation d'eau depuis le portail **"Agence en Ligne"** (STGS).
 
